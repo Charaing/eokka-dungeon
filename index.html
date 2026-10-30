@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>억까 던전</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Noto+Sans+KR:wght@500;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#14111c; --fg:#f4ecff; --accent:#ff3b6b; --muted:#8a7fa3; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:"Noto Sans KR","Malgun Gothic",sans-serif; overflow:hidden; touch-action:none; }
+  #wrap { position:relative; width:min(100vw, calc(100vh * 16 / 9)); aspect-ratio:16/9; margin:0 auto; top:50%; transform:translateY(-50%); }
+  canvas { width:100%; height:100%; display:block; image-rendering:pixelated; background:#1d1830; }
+  #hud { position:absolute; top:8px; left:12px; right:12px; display:flex; gap:12px; align-items:center; pointer-events:none;
+    font-weight:800; font-size:clamp(12px,1.8vw,18px); text-shadow:0 2px 0 #000; }
+  #hud .deaths { color:var(--accent); }
+  #hud .spacer { flex:1; }
+  #easy { pointer-events:auto; font:inherit; font-size:0.8em; background:#2b2440; color:var(--fg); border:2px solid var(--muted);
+    border-radius:6px; padding:4px 10px; cursor:pointer; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+    background:rgba(10,8,16,.88); text-align:center; padding:16px; }
+  .overlay h1 { font-family:"Black Han Sans",sans-serif; font-weight:400; font-size:clamp(36px,8vw,96px); margin:0; color:var(--accent);
+    text-shadow:4px 4px 0 #000; letter-spacing:2px; }
+  .overlay p { margin:0; color:var(--muted); font-size:clamp(12px,1.8vw,18px); }
+  .btn { font-family:"Black Han Sans",sans-serif; font-size:clamp(20px,3vw,32px); padding:10px 36px; border:none; border-radius:10px;
+    background:var(--accent); color:#fff; cursor:pointer; box-shadow:0 6px 0 #8a1534; transition:left .12s, top .12s; }
+  .btn:active { transform:translateY(4px); box-shadow:0 2px 0 #8a1534; }
+  #startBtn { position:relative; }
+  .hidden { display:none !important; }
+  #touch { position:absolute; bottom:10px; left:0; right:0; display:none; justify-content:space-between; padding:0 16px; pointer-events:none; }
+  #touch .grp { display:flex; gap:14px; }
+  #touch button { pointer-events:auto; width:clamp(56px,10vw,84px); height:clamp(56px,10vw,84px); border-radius:50%; border:3px solid #fff6;
+    background:#fff2; color:#fff; font-size:28px; }
+  @media (hover:none) and (pointer:coarse) { #touch { display:flex; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="960" height="540"></canvas>
+  <div id="hud">
+    <span id="lvName"></span>
+    <span class="spacer"></span>
+    <span>죽은 횟수: <span class="deaths" id="deathCount">0</span></span>
+    <button id="easy">쉬움 모드</button>
+  </div>
+  <div id="title" class="overlay">
+    <h1>억까 던전</h1>
+    <p>세상에서 제일 쉬운 플랫포머 (진짜임)</p>
+    <button class="btn" id="startBtn">시작</button>
+    <p>← → 이동 · ↑ / Space 점프 · R 자살</p>
+    <p id="bestLine"></p>
+  </div>
+  <div id="ending" class="overlay hidden">
+    <h1>클리어?!</h1>
+    <p id="endStats" style="color:var(--fg);font-size:clamp(16px,2.4vw,26px)"></p>
+    <p id="endMsg"></p>
+    <button class="btn" id="againBtn">한 판 더 (자신 있으면)</button>
+  </div>
+  <div id="touch">
+    <div class="grp"><button data-k="left">◀</button><button data-k="right">▶</button></div>
+    <div class="grp"><button data-k="jump">▲</button></div>
+  </div>
+</div>
+<script>
+(() => {
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = 960, H = 540, T = 30, COLS = 32, ROWS = 18;
+
+// ---------- 레벨 ----------
+// # 땅  X 가짜벽(통과됨)  ^ 가시  V 천장가시  F 가짜바닥  H 숨은블록  p 튀어나오는 가시
+// v 떨어지는 가시블록  C 독동전  G 골  g 가짜골  k 가짜 체크포인트  K 체크포인트
+// J 스프링  r 조작반전 트리거(보이지 않음)  S 시작
+const LEVELS = [
+  { name: '1. 튜토리얼 (쉬움)', rows: [
+    '', '', '', '', '', '', '', '', '', '', '', '', '',
+    '............H',
+    '',
+    '..S.......................p..G',
+    '############..####FFF#########',
+    '############..####XXX#########',
+  ], signs: [{ c: 3, r: 11, t: '→ 그냥 쭉 가면 됨 ㅎ' }] },
+
+  { name: '2. 동전 모으면 보너스!', rows: [
+    '################################',
+    '.........v.......v',
+    '',
+    '', '', '', '', '', '', '', '', '',
+    '....CCC',
+    '...####',
+    '',
+    '..S.....................C....G',
+    '##########FF####..######...#####',
+    '##########XX####..######...#####',
+  ], signs: [{ c: 2, r: 9, t: '동전 1개 = 100점!' }] },
+
+  { name: '3. 깃발만 잡으면 끝', rows: [
+    '', '', '', '', '', '',
+    '',
+    '..............#####',
+    '', '',
+    '..........###',
+    '', '',
+    '......###',
+    '',
+    '..S.........p.........p......G',
+    '################################',
+    '################################',
+  ], goalPath: [[29, 15], [1, 15], [16, 6], [29, 15]],
+     signs: [{ c: 20, r: 11, t: '깃발은 가만히 있어요' }] },
+
+  { name: '4. 조작키 연습', rows: [
+    '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+    '..S......r....^.....r.....^..G',
+    '#######..######..#######..######',
+    '#######..######..#######..######',
+  ], signs: [{ c: 2, r: 11, t: '조작은 기본이죠?' }] },
+
+  { name: '5. 체크포인트 있음 ㅎ', rows: [
+    '################################',
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV',
+    '', '', '', '', '', '', '', '', '', '',
+    '',
+    '...............H',
+    '',
+    '..S.....k.......J......K...p.G',
+    '################################',
+    '################################',
+  ], signs: [{ c: 5, r: 10, t: '체크포인트 = 안전 ♥' }, { c: 14, r: 8, t: '스프링 = 빠름' }] },
+
+  { name: '6. 마지막 (진짜 마지막)', rows: [
+    '',
+    '..........v.........v',
+    '', '', '', '', '', '', '', '', '', '', '', '', '',
+    '...S...........p...........g',
+    '##########FF#######....#########',
+    '##########XX#######....#########',
+  ], leftExit: true,
+     signs: [{ c: 0, r: 12, t: '← 막힘' }, { c: 22, r: 10, t: '골이다!!!' }] },
+];
+
+const DEATH_LINES = ['ㅋㅋㅋㅋㅋㅋㅋ','실력 이슈','그걸 죽네','손가락 장식임?','방금 그거 일부러 한 거지?','할머니도 이건 깸',
+  'ㄹㅇ 개못하네','포기하면 편해','다시 해봐 ㅎ (또 죽겠지만)','이 게임 쉬운 편임','키보드 탓 아님','예상 적중 ㅋ',
+  '눈 감고 하는 중?','억울해? 억울하면 깨든가','ㅎㅎ 그럴 줄 알았어','대단하다 대단해 (비꼼)','또?','진짜 또?','개발자 지금 웃는 중'];
+const CLEAR_LINES = ['운 좋았네', '봐준 거임', '다음 판에서 보자 ㅎ', '이번엔 실력 아님', '어쭈?'];
+
+// ---------- 상태 ----------
+let levelIdx = 0, level, tiles, ents, signs;
+let spawn, checkpoint = null;
+let p, keys = { left: false, right: false, jump: false }, jumpHeld = false;
+let deaths = 0, levelDeaths = 0, reverse = false;
+let state = 'title'; // title | play | dead | clear | ending
+let timer = 0, shake = 0, msgBig = '', msgSmall = '', msgTimer = 0, toast = '', toastTimer = 0;
+let particles = [], frame = 0, startTime = 0;
+let bestTotal = 0;
+try { bestTotal = +localStorage.getItem('eokka_total_deaths') || 0; } catch (e) {}
+
+const $ = id => document.getElementById(id);
+function updateHud() {
+  $('lvName').textContent = level ? level.name : '';
+  $('deathCount').textContent = deaths;
+}
+
+// ---------- 사운드 ----------
+let ac;
+function beep(freq, dur, type = 'square', vol = 0.08, slide = 0) {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(freq, ac.currentTime);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq + slide), ac.currentTime + dur);
+    g.gain.setValueAtTime(vol, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + dur);
+    o.connect(g).connect(ac.destination); o.start(); o.stop(ac.currentTime + dur);
+  } catch (e) {}
+}
+const sfx = {
+  jump: () => beep(520, 0.12, 'square', 0.05, 300),
+  die: () => { beep(300, 0.5, 'sawtooth', 0.1, -260); setTimeout(() => beep(90, 0.4, 'square', 0.08), 120); },
+  bonk: () => beep(140, 0.15, 'square', 0.1),
+  spring: () => beep(200, 0.3, 'triangle', 0.1, 900),
+  clear: () => [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.15, 'square', 0.06), i * 90)),
+  troll: () => [400, 300, 200].forEach((f, i) => setTimeout(() => beep(f, 0.12, 'triangle', 0.07), i * 110)),
+};
+
+// ---------- 레벨 로드 ----------
+function loadLevel(i) {
+  levelIdx = i; level = LEVELS[i]; checkpoint = null; levelDeaths = 0;
+  resetLevel(); updateHud();
+}
+function resetLevel() {
+  tiles = []; ents = []; reverse = false;
+  signs = level.signs || [];
+  for (let r = 0; r < ROWS; r++) {
+    const raw = level.rows[r] || '', row = raw.padEnd(COLS, r >= 15 && raw.endsWith('#') ? '#' : '.');
+    tiles.push([]);
+    for (let c = 0; c < COLS; c++) {
+      const ch = row[c], x = c * T, y = r * T;
+      tiles[r].push(ch === '#' ? 1 : ch === 'X' ? 2 : 0);
+      const e = { t: ch, x, y, w: T, h: T, c, r };
+      switch (ch) {
+        case 'S': spawn = { x: x + 5, y: y + T - 26 }; break;
+        case '^': case 'V': case 'F': case 'H': case 'C': case 'k': case 'K': case 'J': case 'r': case 'g':
+          ents.push(e); break;
+        case 'p': e.up = 0; ents.push(e); break;
+        case 'v': e.vy = 0; ents.push(e); break;
+        case 'G': ents.push(e); break;
+      }
+    }
+  }
+  const goal = ents.find(e => e.t === 'G');
+  if (goal && level.goalPath) { goal.step = 0; goal.tx = goal.x; goal.ty = goal.y; }
+  const s = checkpoint || spawn;
+  p = { x: s.x, y: s.y, w: 20, h: 26, vx: 0, vy: 0, onGround: false, coyote: 0, face: 1 };
+}
+
+// ---------- 충돌 ----------
+const overlap = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+function solids() {
+  const out = [];
+  const c0 = Math.max(0, Math.floor(p.x / T) - 1), c1 = Math.min(COLS - 1, Math.floor((p.x + p.w) / T) + 1);
+  const r0 = Math.max(0, Math.floor(p.y / T) - 1), r1 = Math.min(ROWS - 1, Math.floor((p.y + p.h) / T) + 1);
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++)
+    if (tiles[r][c] === 1) out.push({ x: c * T, y: r * T, w: T, h: T });
+  for (const e of ents) {
+    if ((e.t === 'F' && !e.gone) || (e.t === 'H' && e.shown) || e.t === 'J') out.push({ x: e.x, y: e.y, w: e.w, h: e.h, e });
+  }
+  return out;
+}
+function inset(e, l, t, r, b) { return { x: e.x + l, y: e.y + t, w: e.w - l - r, h: e.h - t - b }; }
+
+// ---------- 죽음 ----------
+function die(reason) {
+  if (state !== 'play') return;
+  state = 'dead'; timer = 70; shake = 16; deaths++; levelDeaths++;
+  try { localStorage.setItem('eokka_total_deaths', String(bestTotal + 1)); bestTotal++; } catch (e) {}
+  msgBig = DEATH_LINES[Math.floor(Math.random() * DEATH_LINES.length)];
+  msgSmall = reason; msgTimer = 70;
+  for (let i = 0; i < 40; i++) particles.push({ x: p.x + p.w / 2, y: p.y + p.h / 2, vx: (Math.random() - .5) * 12,
+    vy: (Math.random() - .8) * 12, life: 50 + Math.random() * 30, col: Math.random() < .5 ? '#ff3b6b' : '#ffd23b' });
+  sfx.die(); updateHud();
+}
+function say(t, n = 90) { toast = t; toastTimer = n; }
+
+// ---------- 업데이트 ----------
+function update() {
+  frame++;
+  particles = particles.filter(q => (q.x += q.vx, q.y += q.vy, q.vy += 0.5, --q.life > 0));
+  if (shake > 0) shake *= 0.85;
+  if (msgTimer > 0) msgTimer--;
+  if (toastTimer > 0) toastTimer--;
+
+  if (state === 'dead') { if (--timer <= 0) { state = 'play'; resetLevel(); if (level.leftExit && levelDeaths >= 4) say('힌트: 진짜 출구는 시작한 곳 근처에 있음', 200); } return; }
+  if (state === 'clear') { if (--timer <= 0) { if (levelIdx + 1 < LEVELS.length) { loadLevel(levelIdx + 1); state = 'play'; } else showEnding(); } return; }
+  if (state !== 'play') return;
+
+  // 입력
+  let dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+  if (reverse) dir = -dir;
+  if (dir) { p.vx += dir * 0.8; p.face = dir; } else p.vx *= 0.72;
+  p.vx = Math.max(-4, Math.min(4, p.vx));
+  if (Math.abs(p.vx) < 0.05) p.vx = 0;
+
+  p.coyote = p.onGround ? 6 : p.coyote - 1;
+  if (keys.jump && !jumpHeld && p.coyote > 0) { p.vy = -11; p.coyote = 0; sfx.jump(); }
+  if (p.vy >= 0) p.boost = false;
+  if (!keys.jump && p.vy < -4 && !p.boost) p.vy = -4;
+  jumpHeld = keys.jump;
+  p.vy = Math.min(14, p.vy + 0.6);
+
+  // X 이동
+  p.x += p.vx;
+  for (const s of solids()) if (overlap(p, s)) { p.x = p.vx > 0 ? s.x - p.w : s.x + s.w; p.vx = 0; }
+  if (!level.leftExit) p.x = Math.max(0, p.x);
+  p.x = Math.min(W - p.w, p.x);
+
+  // Y 이동
+  const prevTop = p.y;
+  p.y += p.vy; p.onGround = false;
+  if (p.vy < 0) for (const e of ents) if (e.t === 'H' && !e.shown && overlap(p, e) && prevTop >= e.y + e.h - 1) {
+    e.shown = true; p.y = e.y + e.h; p.vy = 1; sfx.bonk(); say('머리 조심 ㅋ', 50);
+  }
+  for (const s of solids()) if (overlap(p, s)) {
+    if (p.vy > 0) {
+      p.y = s.y - p.h; p.vy = 0; p.onGround = true;
+      if (s.e && s.e.t === 'J') { p.vy = -23; p.boost = true; p.onGround = false; sfx.spring(); say('날아라~', 60); }
+    } else if (p.vy < 0) { p.y = s.y + s.h; p.vy = 0; }
+  }
+  // 가짜바닥: 밟는 순간 꺼짐
+  const feet = { x: p.x, y: p.y + p.h, w: p.w, h: 2 };
+  for (const e of ents) if (e.t === 'F' && !e.gone && overlap(feet, e)) { e.gone = true; e.fy = 0; sfx.troll(); }
+
+  if (level.leftExit && p.x + p.w < 0) return win();
+  if (p.y > H + 40) return die('바닥이 없었네? ㅋ');
+
+  const pcx = p.x + p.w / 2;
+  for (const e of ents) {
+    switch (e.t) {
+      case '^': if (overlap(p, inset(e, 6, 12, 6, 0))) return die('가시는 아프다'); break;
+      case 'V': if (overlap(p, inset(e, 6, 0, 6, 12))) return die('천장도 봐야지'); break;
+      case 'p':
+        if (!e.on && Math.abs(pcx - (e.x + 15)) < 34 && p.y + p.h > e.y - 40) { e.on = true; sfx.troll(); }
+        if (e.on) { e.up = Math.min(1, e.up + 0.35); if (overlap(p, inset(e, 6, 12, 6, 0))) return die('튀어나올 줄 몰랐지?'); }
+        break;
+      case 'v':
+        if (!e.fall && !e.landed && pcx > e.x + 15 - 85 && pcx < e.x + 45 && p.y > e.y) { e.fall = true; sfx.troll(); }
+        if (e.fall) {
+          e.y += 18;
+          const r = Math.floor((e.y + e.h) / T), c = e.c;
+          if (r < ROWS && tiles[r] && tiles[r][c] === 1) { e.y = r * T - e.h; e.fall = false; e.landed = true; }
+          if (e.y > H) e.fall = false;
+        }
+        if (overlap(p, inset(e, 4, 4, 4, 2))) return die('위를 봤어야지');
+        break;
+      case 'C': if (overlap(p, inset(e, 7, 7, 7, 7))) return die('독 동전임 ㅋ 욕심쟁이'); break;
+      case 'k': if (overlap(p, e)) return die('체크포인트(폭탄)'); break;
+      case 'K': if (!e.got && overlap(p, e)) { e.got = true; checkpoint = { x: e.x + 5, y: e.y + T - 26 }; say('체크포인트! (진짜임)', 70); beep(880, .2); } break;
+      case 'r':
+        if (!e.used && Math.floor(pcx / T) === e.c) { e.used = true; reverse = !reverse; say(reverse ? '어? 방향키가 왜 이럼? ㅋㅋ' : '원래대로~ (헷갈리지?)', 90); sfx.troll(); }
+        break;
+      case 'g': if (overlap(p, inset(e, 4, 0, 4, 0))) { e.bad = true; return die('그게 진짜 골일 리가 ㅋ'); } break;
+      case 'G': {
+        if (level.goalPath) {
+          const moving = Math.abs(e.x - e.tx) + Math.abs(e.y - e.ty) > 2;
+          e.x += (e.tx - e.x) * 0.25; e.y += (e.ty - e.y) * 0.25;
+          if (!moving && e.step < level.goalPath.length - 1 && Math.hypot(pcx - (e.x + 15), p.y - e.y) < 95) {
+            e.step++; const [c, r] = level.goalPath[e.step]; e.tx = c * T; e.ty = r * T;
+            sfx.troll(); say(['메롱~', '못 잡지롱', '여기야 여기~', ''][e.step - 1] || '', 60);
+          }
+          if (moving) break;
+        }
+        if (overlap(p, inset(e, 8, 0, 8, 0))) return clearLevel();
+        break;
+      }
+    }
+  }
+}
+function clearLevel() {
+  state = 'clear'; timer = 80; sfx.clear();
+  msgBig = '클리어!'; msgSmall = CLEAR_LINES[Math.floor(Math.random() * CLEAR_LINES.length)]; msgTimer = 80;
+}
+function win() { state = 'clear'; timer = 80; sfx.clear(); msgBig = '어떻게 알았지?'; msgSmall = '진짜 출구였음'; msgTimer = 80; }
+
+function showEnding() {
+  state = 'ending';
+  const sec = Math.floor((Date.now() - startTime) / 1000);
+  $('endStats').textContent = `죽은 횟수 ${deaths}번 · 낭비한 시간 ${Math.floor(sec / 60)}분 ${sec % 60}초`;
+  $('endMsg').textContent = deaths < 15 ? '혹시 공략 봤음? 신고함' : deaths < 40 ? '평균 이하 ㅎ' : deaths < 80 ? '손가락 괜찮음?' : '이 정도면 재능임 (죽는 재능)';
+  $('ending').classList.remove('hidden');
+}
+
+// ---------- 그리기 ----------
+function drawSpike(x, y, up, down) {
+  ctx.fillStyle = '#e8e8f0';
+  ctx.beginPath();
+  if (down) { ctx.moveTo(x + 3, y); ctx.lineTo(x + 15, y + 26); ctx.lineTo(x + 27, y); }
+  else { const h = 26 * up; ctx.moveTo(x + 3, y + 30); ctx.lineTo(x + 15, y + 30 - h); ctx.lineTo(x + 27, y + 30); }
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#7d7d90'; ctx.lineWidth = 2; ctx.stroke();
+}
+function drawBlock(x, y, base = '#6b4a2f', top = '#4fbf52') {
+  ctx.fillStyle = base; ctx.fillRect(x, y, T, T);
+  ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.fillRect(x, y + 14, T, 2); ctx.fillRect(x + 14, y, 2, 14); ctx.fillRect(x + 6, y + 16, 2, 14);
+  ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1; ctx.strokeRect(x + .5, y + .5, T - 1, T - 1);
+  if (top) { ctx.fillStyle = top; ctx.fillRect(x, y, T, 6); }
+}
+function drawFlag(x, y, bad) {
+  ctx.fillStyle = '#ddd'; ctx.fillRect(x + 13, y - 30, 4, 60);
+  ctx.fillStyle = bad ? '#ff3b6b' : '#ffd23b';
+  ctx.beginPath(); ctx.moveTo(x + 17, y - 30); ctx.lineTo(x + 40, y - 21 + Math.sin(frame / 6) * 2); ctx.lineTo(x + 17, y - 12); ctx.fill();
+  ctx.fillStyle = '#ffd23b'; ctx.beginPath(); ctx.arc(x + 15, y - 32, 4, 0, 7); ctx.fill();
+}
+function draw() {
+  ctx.save();
+  if (shake > 0.5) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#2a2150'); g.addColorStop(1, '#5b3a6e');
+  ctx.fillStyle = g; ctx.fillRect(-20, -20, W + 40, H + 40);
+  // 구름
+  ctx.fillStyle = 'rgba(255,255,255,.07)';
+  for (let i = 0; i < 5; i++) { const cx = ((i * 230 + frame * 0.2) % (W + 200)) - 100; ctx.beginPath(); ctx.ellipse(cx, 70 + i * 40, 70, 18, 0, 0, 7); ctx.fill(); }
+
+  if (level) {
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (tiles[r][c])
+      drawBlock(c * T, r * T, '#6b4a2f', r > 0 && (tiles[r - 1][c] || level.rows[r - 1][c] === 'F') ? null : '#4fbf52');
+
+    ctx.font = '700 15px "Noto Sans KR", sans-serif'; ctx.textAlign = 'left';
+    for (const s of signs) {
+      const tw = ctx.measureText(s.t).width + 16;
+      ctx.fillStyle = '#c99a5b'; ctx.fillRect(s.c * T, s.r * T, tw, 26);
+      ctx.fillStyle = '#6b4a2f'; ctx.fillRect(s.c * T + 8, s.r * T + 26, 4, 30);
+      ctx.fillStyle = '#2b1b0e'; ctx.fillText(s.t, s.c * T + 8, s.r * T + 18);
+    }
+
+    for (const e of ents) {
+      switch (e.t) {
+        case '^': drawSpike(e.x, e.y, 1); break;
+        case 'V': drawSpike(e.x, e.y, 1, true); break;
+        case 'p': if (e.on) drawSpike(e.x, e.y, e.up); break;
+        case 'F': if (!e.gone) drawBlock(e.x, e.y); else if (e.fy < 600) { e.fy += 12; drawBlock(e.x, e.y + e.fy); } break;
+        case 'H': if (e.shown) drawBlock(e.x, e.y, '#c98a1b', null); break;
+        case 'v':
+          ctx.fillStyle = '#777'; ctx.fillRect(e.x + 2, e.y, 26, 18);
+          drawSpike(e.x, e.y + 4, 1, true); break;
+        case 'C': {
+          const sc = Math.abs(Math.cos(frame / 12));
+          ctx.fillStyle = '#ffd23b'; ctx.beginPath(); ctx.ellipse(e.x + 15, e.y + 15 + Math.sin(frame / 10) * 3, 9 * sc + 1, 10, 0, 0, 7); ctx.fill();
+          ctx.strokeStyle = '#b8860b'; ctx.lineWidth = 2; ctx.stroke(); break;
+        }
+        case 'k': case 'K': {
+          const got = e.t === 'K' && e.got;
+          ctx.fillStyle = '#ccc'; ctx.fillRect(e.x + 13, e.y, 4, 30);
+          ctx.fillStyle = got ? '#4fbf52' : '#3b9bff'; ctx.fillRect(e.x + 17, e.y, 14, 10);
+          break;
+        }
+        case 'J':
+          ctx.fillStyle = '#ff3b6b'; ctx.fillRect(e.x + 2, e.y + 16, 26, 14);
+          ctx.fillStyle = '#ddd'; ctx.fillRect(e.x + 4, e.y + 8, 22, 8);
+          ctx.fillStyle = '#ff3b6b'; ctx.fillRect(e.x, e.y + 2, 30, 6); break;
+        case 'G': drawFlag(e.x, e.y); break;
+        case 'g': drawFlag(e.x, e.y, e.bad); break;
+      }
+    }
+
+    // 플레이어
+    if (state !== 'dead') {
+      const sq = p.onGround ? 0 : Math.min(4, Math.abs(p.vy) * 0.3);
+      ctx.fillStyle = '#7cf0ff'; ctx.fillRect(p.x + sq / 2, p.y - sq, p.w - sq, p.h + sq);
+      ctx.fillStyle = '#0e1a2b';
+      ctx.fillRect(p.x + (p.face > 0 ? 12 : 4), p.y + 6, 4, 6);
+      ctx.fillRect(p.x + (p.face > 0 ? 5 : 12), p.y + 6, 3, 6);
+      if (reverse) { ctx.fillStyle = '#ff3b6b'; ctx.font = '700 14px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('?', p.x + p.w / 2, p.y - 6); }
+    }
+  }
+  for (const q of particles) { ctx.fillStyle = q.col; ctx.fillRect(q.x, q.y, 5, 5); }
+  ctx.restore();
+
+  ctx.textAlign = 'center';
+  if (msgTimer > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(0, H / 2 - 70, W, 120);
+    ctx.font = '400 64px "Black Han Sans", sans-serif'; ctx.fillStyle = state === 'clear' ? '#ffd23b' : '#ff3b6b';
+    ctx.fillText(msgBig, W / 2, H / 2);
+    ctx.font = '800 22px "Noto Sans KR", sans-serif'; ctx.fillStyle = '#fff';
+    ctx.fillText(msgSmall, W / 2, H / 2 + 36);
+  }
+  if (toastTimer > 0 && toast) {
+    ctx.font = '800 22px "Noto Sans KR", sans-serif';
+    const tw = ctx.measureText(toast).width + 30;
+    ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(W / 2 - tw / 2, 50, tw, 38);
+    ctx.fillStyle = '#ffd23b'; ctx.fillText(toast, W / 2, 77);
+  }
+}
+
+let last = 0, acc = 0;
+function loop(ts) {
+  acc += Math.min(100, ts - (last || ts)); last = ts;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  draw(); requestAnimationFrame(loop);
+}
+if (new URLSearchParams(location.search).has('debug'))
+  window.__eokka = { step: n => { for (let i = 0; i < n; i++) update(); draw(); }, get p() { return p; }, get ents() { return ents; }, get state() { return state; }, get level() { return levelIdx; } };
+
+// ---------- 입력 ----------
+const KEYMAP = { ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right', ArrowUp: 'jump', KeyW: 'jump', Space: 'jump' };
+addEventListener('keydown', e => {
+  if (KEYMAP[e.code]) { keys[KEYMAP[e.code]] = true; e.preventDefault(); }
+  if (e.code === 'KeyR' && state === 'play') die('자살은 1회로 칩니다');
+  if (state === 'title' && (e.code === 'Enter' || e.code === 'Space')) startGame();
+});
+addEventListener('keyup', e => { if (KEYMAP[e.code]) keys[KEYMAP[e.code]] = false; });
+document.querySelectorAll('#touch button').forEach(b => {
+  const k = b.dataset.k;
+  b.addEventListener('pointerdown', e => { keys[k] = true; e.preventDefault(); });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => b.addEventListener(ev, () => keys[k] = false));
+});
+
+// 도망가는 시작 버튼
+let flee = 0;
+const startBtn = $('startBtn');
+startBtn.addEventListener('pointerenter', e => {
+  if (e.pointerType !== 'mouse' || flee >= 3) return;
+  flee++;
+  startBtn.style.left = (Math.random() * 400 - 200) + 'px';
+  startBtn.style.top = (Math.random() * 160 - 80) + 'px';
+  startBtn.textContent = ['어딜', '못 누르지롱', '알았어 눌러'][flee - 1];
+});
+startBtn.addEventListener('click', startGame);
+
+$('easy').addEventListener('click', () => {
+  if (state !== 'play') return;
+  say('그런 거 없음 ㅋ (+1 데스)', 80); deaths++; updateHud(); sfx.troll(); $('easy').blur();
+});
+$('againBtn').addEventListener('click', () => {
+  $('ending').classList.add('hidden'); deaths = 0; startTime = Date.now(); loadLevel(0); state = 'play';
+  say('2회차라고 쉬워지진 않음', 100);
+});
+
+function startGame() {
+  if (state !== 'title') return;
+  const lv = +new URLSearchParams(location.search).get('lv') || 1;
+  $('title').classList.add('hidden'); startTime = Date.now(); loadLevel(Math.min(LEVELS.length, Math.max(1, lv)) - 1); state = 'play';
+  say('행운을 빔 (필요할 거임)', 100);
+}
+
+$('bestLine').textContent = bestTotal ? `이 브라우저에서 지금까지 죽은 횟수: ${bestTotal}번` : '';
+updateHud();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
